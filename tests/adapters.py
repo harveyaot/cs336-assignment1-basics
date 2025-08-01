@@ -10,7 +10,6 @@ import torch
 from torch import Tensor
 
 
-
 def run_linear(
     d_in: int,
     d_out: int,
@@ -25,7 +24,7 @@ def run_linear(
         out_dim (int): The size of the output dimension
         weights (Float[Tensor, "d_out d_in"]): The linear weights to use
         in_features (Float[Tensor, "... d_in"]): The output tensor to apply the function to
-    
+
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
@@ -47,7 +46,7 @@ def run_embedding(
         d_model (int): The size of the embedding dimension
         weights (Float[Tensor, "vocab_size d_model"]): The embedding vectors to fetch from
         token_ids (Int[Tensor, "..."]): The set of token ids to fetch from the Embedding layer
-    
+
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
@@ -302,7 +301,7 @@ def run_transformer_lm(
             evenly divisible by `num_heads`.
         d_ff (int): Dimensionality of the feed-forward inner layer (section 3.3).
         rope_theta (float): The RoPE $\Theta$ parameter.
-        weights (dict[str, Tensor]): 
+        weights (dict[str, Tensor]):
             State dict of our reference implementation. {num_layers} refers to an
             integer between `0` and `num_layers - 1` (the layer index).
             The keys of this dictionary are:
@@ -435,7 +434,9 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
     raise NotImplementedError
 
 
-def run_cross_entropy(inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]) -> Float[Tensor, ""]:
+def run_cross_entropy(
+    inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]
+) -> Float[Tensor, ""]:
     """Given a tensor of inputs and targets, compute the average cross-entropy
     loss across examples.
 
@@ -451,7 +452,9 @@ def run_cross_entropy(inputs: Float[Tensor, " batch_size vocab_size"], targets: 
     raise NotImplementedError
 
 
-def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
+def run_gradient_clipping(
+    parameters: Iterable[torch.nn.Parameter], max_l2_norm: float
+) -> None:
     """Given a set of parameters, clip their combined gradients to have l2 norm at most max_l2_norm.
 
     Args:
@@ -558,7 +561,57 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    from cs336_basics.simple_bpe import BPETokenizer, BPETokenizerParams
+    
+    # Create a copy of the vocab to avoid modifying the original
+    vocab_copy = vocab.copy()
+    
+    # Handle special tokens
+    special_tokens_dict = {}
+    if special_tokens:
+        for special_token in special_tokens:
+            byte_encoded_special_token = special_token.encode("utf-8")
+            
+            # Check if the special token already exists in the vocab
+            existing_id = None
+            for token_id, token_bytes in vocab_copy.items():
+                if token_bytes == byte_encoded_special_token:
+                    existing_id = token_id
+                    break
+            
+            if existing_id is not None:
+                # Special token already exists in vocab, use existing ID
+                special_tokens_dict[special_token] = existing_id
+            else:
+                # Special token doesn't exist, add it to vocab
+                next_id = len(vocab_copy)
+                vocab_copy[next_id] = byte_encoded_special_token
+                special_tokens_dict[special_token] = next_id
+    
+    # Convert merges from list[tuple[bytes, bytes]] to dict[tuple[int, int], int]
+    merges_dict = {}
+    
+    # Create a reverse mapping from bytes to token IDs for efficient lookup
+    bytes_to_id = {}
+    for token_id, token_bytes in vocab_copy.items():
+        bytes_to_id[token_bytes] = token_id
+    
+    # Process each merge pair
+    for i, (bytes1, bytes2) in enumerate(merges):
+        # Find the token IDs for the byte sequences
+        id1 = bytes_to_id.get(bytes1)
+        id2 = bytes_to_id.get(bytes2)
+        
+        if id1 is not None and id2 is not None:
+            # Find the merged token ID by looking up the concatenated bytes
+            merged_bytes = bytes1 + bytes2
+            merged_id = bytes_to_id.get(merged_bytes)
+            
+            if merged_id is not None:
+                merges_dict[(id1, id2)] = merged_id
+    
+    params = BPETokenizerParams(vocab_copy, merges_dict, special_tokens_dict if special_tokens_dict else None)
+    return BPETokenizer(params)
 
 
 def run_train_bpe(
@@ -569,23 +622,27 @@ def run_train_bpe(
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     """Given the path to an input corpus, run train a BPE tokenizer and
     output its vocabulary and merges.
-
-    Args:
-        input_path (str | os.PathLike): Path to BPE tokenizer training data.
-        vocab_size (int): Total number of items in the tokenizer's vocabulary (including special tokens).
-        special_tokens (list[str]): A list of string special tokens to be added to the tokenizer vocabulary.
-            These strings will never be split into multiple tokens, and will always be
-            kept as a single token. If these special tokens occur in the `input_path`,
-            they are treated as any other string.
-
-    Returns:
-        tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
-            vocab:
-                The trained tokenizer vocabulary, a mapping from int (token ID in the vocabulary)
-                to bytes (token bytes)
-            merges:
-                BPE merges. Each list item is a tuple of bytes (<token1>, <token2>),
-                representing that <token1> was merged with <token2>.
-                Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    from cs336_basics.simple_train_bpe import train_bpe
+
+    # Read the input file
+    with open(input_path, "r", encoding="utf-8") as f:
+        text_content = f.read()
+
+    # Train BPE using the optimized version for speed
+    num_merges = vocab_size - 256 - len(special_tokens)
+    params = train_bpe(
+        string=text_content,  # Our function expects a list of texts
+        num_merges=num_merges,
+        special_tokens=special_tokens,
+        **kwargs,
+    )
+
+    # Convert merges from Dict[Tuple[int, int], int] to list[tuple[bytes, bytes]]
+    merges_list = []
+    for (id1, id2), _ in params.merges.items():
+        if id1 in params.vocab and id2 in params.vocab:
+            bytes1 = params.vocab[id1]
+            bytes2 = params.vocab[id2]
+            merges_list.append((bytes1, bytes2))
+    return params.vocab, merges_list
