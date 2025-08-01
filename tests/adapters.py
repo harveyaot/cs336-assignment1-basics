@@ -466,7 +466,7 @@ def run_gradient_clipping(
     raise NotImplementedError
 
 
-def get_adamw_cls() -> type[torch.optim.Optimizer]:
+def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
