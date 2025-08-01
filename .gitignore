@@ -161,3 +161,19 @@ cython_debug/
 
 .ruff_cache/
 *.zip
+
+# Debug files
+debug_*.py
+check_*.py
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# VSCode
+.vscode/
+
+# Temporary files
+*.tmp
+*.temp
