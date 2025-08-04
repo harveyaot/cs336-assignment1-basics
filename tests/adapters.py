@@ -28,8 +28,16 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
+    from cs336_basics.simple_model import Linear
 
-    raise NotImplementedError
+    # Create Linear module
+    linear = Linear(d_in, d_out)
+
+    # Load the given weights
+    linear.weight.data = weights
+
+    # Apply the transformation
+    return linear(in_features)
 
 
 def run_embedding(
@@ -50,8 +58,16 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
+    from cs336_basics.simple_model import Embedding
 
-    raise NotImplementedError
+    # Create Embedding module
+    embedding = Embedding(vocab_size, d_model)
+
+    # Load the given weights
+    embedding.weight.data = weights
+
+    # Apply the embedding lookup
+    return embedding(token_ids)
 
 
 def run_swiglu(
@@ -76,14 +92,18 @@ def run_swiglu(
     Returns:
         Float[Tensor, "... d_model"]: Output embeddings of the same shape as the input embeddings.
     """
-    # Example:
-    # If your state dict keys match, you can use `load_state_dict()`
-    # swiglu.load_state_dict(weights)
-    # You can also manually assign the weights
-    # swiglu.w1.weight.data = w1_weight
-    # swiglu.w2.weight.data = w2_weight
-    # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    from cs336_basics.simple_model import SwiGLU
+
+    # Create SwiGLU module with specified dimensions
+    swiglu = SwiGLU(d_model, d_ff)
+
+    # Load the given weights
+    swiglu.w1.weight.data = w1_weight
+    swiglu.w2.weight.data = w2_weight
+    swiglu.w3.weight.data = w3_weight
+
+    # Apply SwiGLU
+    return swiglu(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -104,7 +124,13 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    from cs336_basics.simple_model import scaled_dot_product_attention
+
+    # Convert mask to boolean if provided (might be float in tests)
+    if mask is not None:
+        mask = mask.bool()
+
+    return scaled_dot_product_attention(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
@@ -138,7 +164,60 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    from cs336_basics.simple_model import MultiHeadSelfAttention
+
+    # Create multi-head self-attention module
+    # For testing without RoPE, we'll disable RoPE by using a very large theta
+    # or create a version that doesn't apply RoPE
+    mha = MultiHeadSelfAttention(
+        d_model, num_heads, rope_theta=1e10
+    )  # Large theta minimizes RoPE effect
+
+    # Load the given weights
+    mha.q_proj.weight.data = q_proj_weight
+    mha.k_proj.weight.data = k_proj_weight
+    mha.v_proj.weight.data = v_proj_weight
+    mha.output_proj.weight.data = o_proj_weight
+
+    # Apply multi-head self-attention
+    # Note: This version should not use RoPE, so we'll create a simple version
+    # Let me create a simpler version without RoPE for this test
+
+    # For now, let's create a version that bypasses RoPE
+    return _run_multihead_self_attention_no_rope(mha, in_features)
+
+
+def _run_multihead_self_attention_no_rope(mha, x):
+    """Helper function to run multi-head attention without RoPE for testing."""
+    batch_size, seq_len, d_model = x.shape
+
+    # Create causal mask
+    causal_mask = mha._create_causal_mask(seq_len, x.device)
+
+    # Project to Q, K, V
+    Q = mha.q_proj(x)
+    K = mha.k_proj(x)
+    V = mha.v_proj(x)
+
+    # Reshape for multi-head attention
+    Q = Q.view(batch_size, seq_len, mha.num_heads, mha.d_head).transpose(1, 2)
+    K = K.view(batch_size, seq_len, mha.num_heads, mha.d_head).transpose(1, 2)
+    V = V.view(batch_size, seq_len, mha.num_heads, mha.d_head).transpose(1, 2)
+
+    # Apply scaled dot-product attention with causal mask (NO RoPE)
+    from cs336_basics.simple_model import scaled_dot_product_attention
+
+    attn_output = scaled_dot_product_attention(Q, K, V, causal_mask)
+
+    # Concatenate heads
+    attn_output = (
+        attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, d_model)
+    )
+
+    # Apply output projection
+    output = mha.output_proj(attn_output)
+
+    return output
 
 
 def run_multihead_self_attention_with_rope(
@@ -178,7 +257,19 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    from cs336_basics.simple_model import MultiHeadSelfAttention
+
+    # Create multi-head self-attention module with RoPE
+    mha = MultiHeadSelfAttention(d_model, num_heads, max_seq_len, rope_theta=theta)
+
+    # Load the given weights
+    mha.q_proj.weight.data = q_proj_weight
+    mha.k_proj.weight.data = k_proj_weight
+    mha.v_proj.weight.data = v_proj_weight
+    mha.output_proj.weight.data = o_proj_weight
+
+    # Apply multi-head self-attention with RoPE
+    return mha(in_features, token_positions)
 
 
 def run_rope(
@@ -200,7 +291,15 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    from cs336_basics.simple_model import RotaryPositionalEmbedding
+
+    # Create RoPE module
+    rope = RotaryPositionalEmbedding(
+        theta, d_k, max_seq_len, device=in_query_or_key.device
+    )
+
+    # Apply RoPE
+    return rope(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -273,7 +372,37 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    from cs336_basics.simple_model import TransformerBlock
+
+    # Create Transformer block
+    transformer_block = TransformerBlock(
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        max_seq_len=max_seq_len,
+        rope_theta=theta,
+    )
+
+    # Load the weights from the state dict
+    # Attention weights
+    transformer_block.attn.q_proj.weight.data = weights["attn.q_proj.weight"]
+    transformer_block.attn.k_proj.weight.data = weights["attn.k_proj.weight"]
+    transformer_block.attn.v_proj.weight.data = weights["attn.v_proj.weight"]
+    transformer_block.attn.output_proj.weight.data = weights["attn.output_proj.weight"]
+
+    # First layer norm weights
+    transformer_block.ln1.weight.data = weights["ln1.weight"]
+
+    # Feed-forward network weights
+    transformer_block.ffn.w1.weight.data = weights["ffn.w1.weight"]
+    transformer_block.ffn.w2.weight.data = weights["ffn.w2.weight"]
+    transformer_block.ffn.w3.weight.data = weights["ffn.w3.weight"]
+
+    # Second layer norm weights
+    transformer_block.ln2.weight.data = weights["ln2.weight"]
+
+    # Apply the transformer block
+    return transformer_block(in_features)
 
 
 def run_transformer_lm(
@@ -355,7 +484,55 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    from cs336_basics.simple_model import TransformerLM
+
+    # Create Transformer Language Model
+    model = TransformerLM(
+        vocab_size=vocab_size,
+        context_length=context_length,
+        d_model=d_model,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        rope_theta=rope_theta,
+    )
+
+    # Load token embeddings
+    model.token_embeddings.weight.data = weights["token_embeddings.weight"]
+
+    # Load weights for each layer
+    for layer_idx in range(num_layers):
+        layer = model.layers[layer_idx]
+
+        # Attention weights
+        layer.attn.q_proj.weight.data = weights[
+            f"layers.{layer_idx}.attn.q_proj.weight"
+        ]
+        layer.attn.k_proj.weight.data = weights[
+            f"layers.{layer_idx}.attn.k_proj.weight"
+        ]
+        layer.attn.v_proj.weight.data = weights[
+            f"layers.{layer_idx}.attn.v_proj.weight"
+        ]
+        layer.attn.output_proj.weight.data = weights[
+            f"layers.{layer_idx}.attn.output_proj.weight"
+        ]
+
+        # Layer norm weights
+        layer.ln1.weight.data = weights[f"layers.{layer_idx}.ln1.weight"]
+        layer.ln2.weight.data = weights[f"layers.{layer_idx}.ln2.weight"]
+
+        # Feed-forward weights
+        layer.ffn.w1.weight.data = weights[f"layers.{layer_idx}.ffn.w1.weight"]
+        layer.ffn.w2.weight.data = weights[f"layers.{layer_idx}.ffn.w2.weight"]
+        layer.ffn.w3.weight.data = weights[f"layers.{layer_idx}.ffn.w3.weight"]
+
+    # Load final layer norm and language model head weights
+    model.ln_final.weight.data = weights["ln_final.weight"]
+    model.lm_head.weight.data = weights["lm_head.weight"]
+
+    # Run forward pass
+    return model(in_indices)
 
 
 def run_rmsnorm(
@@ -378,7 +555,16 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    from cs336_basics.simple_model import RMSNorm
+
+    # Create RMSNorm module
+    rmsnorm = RMSNorm(d_model, eps)
+
+    # Load the given weights
+    rmsnorm.weight.data = weights
+
+    # Apply RMSNorm
+    return rmsnorm(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -392,7 +578,9 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    from cs336_basics.simple_model import silu
+
+    return silu(in_features)
 
 
 def run_get_batch(
@@ -431,7 +619,9 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    from cs336_basics.simple_model import softmax
+
+    return softmax(in_features, dim)
 
 
 def run_cross_entropy(
@@ -449,7 +639,9 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    from cs336_basics.simple_train import cross_entropy
+
+    return cross_entropy(inputs, targets)
 
 
 def run_gradient_clipping(
@@ -470,7 +662,9 @@ def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    from cs336_basics.simple_train import AdamW
+
+    return AdamW
 
 
 def run_get_lr_cosine_schedule(
@@ -562,23 +756,23 @@ def get_tokenizer(
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
     from cs336_basics.simple_bpe import BPETokenizer, BPETokenizerParams
-    
+
     # Create a copy of the vocab to avoid modifying the original
     vocab_copy = vocab.copy()
-    
+
     # Handle special tokens
     special_tokens_dict = {}
     if special_tokens:
         for special_token in special_tokens:
             byte_encoded_special_token = special_token.encode("utf-8")
-            
+
             # Check if the special token already exists in the vocab
             existing_id = None
             for token_id, token_bytes in vocab_copy.items():
                 if token_bytes == byte_encoded_special_token:
                     existing_id = token_id
                     break
-            
+
             if existing_id is not None:
                 # Special token already exists in vocab, use existing ID
                 special_tokens_dict[special_token] = existing_id
@@ -587,30 +781,32 @@ def get_tokenizer(
                 next_id = len(vocab_copy)
                 vocab_copy[next_id] = byte_encoded_special_token
                 special_tokens_dict[special_token] = next_id
-    
+
     # Convert merges from list[tuple[bytes, bytes]] to dict[tuple[int, int], int]
     merges_dict = {}
-    
+
     # Create a reverse mapping from bytes to token IDs for efficient lookup
     bytes_to_id = {}
     for token_id, token_bytes in vocab_copy.items():
         bytes_to_id[token_bytes] = token_id
-    
+
     # Process each merge pair
     for i, (bytes1, bytes2) in enumerate(merges):
         # Find the token IDs for the byte sequences
         id1 = bytes_to_id.get(bytes1)
         id2 = bytes_to_id.get(bytes2)
-        
+
         if id1 is not None and id2 is not None:
             # Find the merged token ID by looking up the concatenated bytes
             merged_bytes = bytes1 + bytes2
             merged_id = bytes_to_id.get(merged_bytes)
-            
+
             if merged_id is not None:
                 merges_dict[(id1, id2)] = merged_id
-    
-    params = BPETokenizerParams(vocab_copy, merges_dict, special_tokens_dict if special_tokens_dict else None)
+
+    params = BPETokenizerParams(
+        vocab_copy, merges_dict, special_tokens_dict if special_tokens_dict else None
+    )
     return BPETokenizer(params)
 
 
