@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import math
+import os
+from typing import Union, BinaryIO, IO
 
 
 def cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
@@ -153,3 +155,138 @@ class AdamW(torch.optim.Optimizer):
                 p.data.addcdiv_(corrected_exp_avg, denom, value=-step_size)
 
         return loss
+
+
+def get_lr_cosine_schedule(
+    it: int,
+    max_learning_rate: float,
+    min_learning_rate: float,
+    warmup_iters: int,
+    cosine_cycle_iters: int,
+) -> float:
+    """
+    Given the parameters of a cosine learning rate decay schedule (with linear
+    warmup) and an iteration number, return the learning rate at the given
+    iteration under the specified schedule.
+
+    Args:
+        it (int): Iteration number to get learning rate for.
+        max_learning_rate (float): alpha_max, the maximum learning rate for
+            cosine learning rate schedule (with warmup).
+        min_learning_rate (float): alpha_min, the minimum / final learning rate for
+            the cosine learning rate schedule (with warmup).
+        warmup_iters (int): T_w, the number of iterations to linearly warm-up
+            the learning rate.
+        cosine_cycle_iters (int): T_c, the total number of iterations for the schedule.
+            The actual cosine phase duration is cosine_cycle_iters - warmup_iters.
+
+    Returns:
+        Learning rate at the given iteration under the specified schedule.
+    """
+    # Calculate the actual cosine phase duration
+    actual_cosine_iters = cosine_cycle_iters - warmup_iters
+
+    # Warmup phase: linear increase from 0 to max_learning_rate
+    if it < warmup_iters:
+        return max_learning_rate * (it / warmup_iters)
+
+    # Cosine decay phase: cosine decay from max_learning_rate to min_learning_rate
+    elif it < warmup_iters + actual_cosine_iters:
+        # Progress through cosine cycle (0 to 1) over actual_cosine_iters steps
+        progress = (it - warmup_iters) / actual_cosine_iters
+        # Cosine decay: cos(π * progress) goes from 1 to -1, so we transform it
+        cosine_factor = 0.5 * (1 + math.cos(math.pi * progress))
+        return (
+            min_learning_rate + (max_learning_rate - min_learning_rate) * cosine_factor
+        )
+
+    # After cosine cycle: stay at minimum learning rate
+    else:
+        return min_learning_rate
+
+
+def gradient_clipping(parameters, max_l2_norm: float) -> None:
+    """
+    Clip gradients of parameters to have L2 norm at most max_l2_norm.
+
+    This function modifies the gradients in-place. If the total L2 norm
+    of all gradients exceeds max_l2_norm, all gradients are scaled down
+    proportionally to satisfy the constraint.
+
+    Args:
+        parameters: Iterable of parameters with gradients to clip
+        max_l2_norm: Maximum L2 norm allowed for the combined gradients
+    """
+    # Convert to list and filter parameters that have gradients
+    params_with_grad = [p for p in parameters if p.grad is not None]
+
+    if len(params_with_grad) == 0:
+        return
+
+    # Compute the total L2 norm of all gradients
+    total_norm = 0.0
+    for p in params_with_grad:
+        param_norm = torch.norm(p.grad.data)
+        total_norm += param_norm.item() ** 2
+
+    total_norm = total_norm**0.5
+
+    # Clip gradients if the total norm exceeds the maximum
+    eps = 1e-6  # PyTorch default epsilon for numerical stability
+    clip_coef = max_l2_norm / (total_norm + eps)
+
+    if clip_coef < 1.0:
+        # Scale down all gradients by the clipping coefficient
+        for p in params_with_grad:
+            p.grad.data.mul_(clip_coef)
+
+
+def save_checkpoint(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    iteration: int,
+    out: Union[str, os.PathLike, BinaryIO, IO[bytes]],
+) -> None:
+    """
+    Save a checkpoint containing model state, optimizer state, and iteration number.
+
+    Args:
+        model: PyTorch module to save
+        optimizer: PyTorch optimizer to save
+        iteration: Current iteration number
+        out: Path or file-like object to save the checkpoint to
+    """
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "iteration": iteration,
+    }
+    torch.save(checkpoint, out)
+
+
+def load_checkpoint(
+    src: Union[str, os.PathLike, BinaryIO, IO[bytes]],
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+) -> int:
+    """
+    Load a checkpoint and restore model and optimizer states.
+
+    Args:
+        src: Path or file-like object to load the checkpoint from
+        model: PyTorch module to restore state to
+        optimizer: PyTorch optimizer to restore state to
+
+    Returns:
+        The iteration number that was saved in the checkpoint
+    """
+    checkpoint = torch.load(src)
+
+    # Restore model state
+    model.load_state_dict(checkpoint["model_state_dict"])
+
+    # Restore optimizer state
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+    # Return the saved iteration number
+    return checkpoint["iteration"]
