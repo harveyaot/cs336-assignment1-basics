@@ -4,24 +4,72 @@ from typing import Dict, List, Set
 import regex
 
 
-GPT2_TOKENIZER_REGEX = \
+# GPT-2 Tokenizer Regex Pattern Explanation:
+# This regex is used for pre-tokenization - splitting text into meaningful chunks before BPE encoding.
+# The pattern uses alternation (|) to match different types of text segments in order of precedence:
+#
+# 1. '(?:[sdmt]|ll|ve|re)
+#    - Matches common English contractions that start with an apostrophe
+#    - 's (possessive or "is"), 'd ("had"/"would"), 'm ("am"), 't ("not")
+#    - 'll ("will"), 've ("have"), 're ("are")
+#    - Examples: "don't" → "don" + "'t", "we'll" → "we" + "'ll"
+#
+# 2. ?\p{L}+
+#    - Matches sequences of letters (Unicode letter category)
+#    - Optional space before letters handles word boundaries
+#    - \p{L} includes letters from all languages (not just ASCII a-z)
+#    - Examples: " hello", "world", " café", "москва"
+#
+# 3. ?\p{N}+
+#    - Matches sequences of numbers (Unicode number category)
+#    - Optional space before numbers
+#    - \p{N} includes all Unicode numeric characters
+#    - Examples: " 123", "42", " ½", "²"
+#
+# 4. ?[^\s\p{L}\p{N}]+
+#    - Matches sequences of punctuation/symbols (anything not space, letter, or number)
+#    - Optional space before punctuation
+#    - Examples: " !", "...", "?!", "@#$"
+#
+# 5. \s+(?!\S)
+#    - Matches whitespace that is NOT followed by non-whitespace
+#    - This captures trailing whitespace at end of text
+#    - Negative lookahead (?!\S) ensures no non-space follows
+#
+# 6. \s+
+#    - Matches any remaining whitespace sequences
+#    - Fallback for internal whitespace not caught by other patterns
+#
+# The regex ensures text is split into semantically meaningful chunks while preserving
+# important linguistic boundaries, which improves BPE's ability to learn good subword units.
+
+GPT2_TOKENIZER_REGEX = (
     r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+)
+
 
 class Tokenizer(ABC):
     """Abstract interface for a tokenizer."""
+
     def encode(self, string: str) -> list[int]:
         raise NotImplementedError
+
     def decode(self, indices: list[int]) -> str:
         raise NotImplementedError
-        
+
+
 @dataclass(frozen=True)
 class BPETokenizerParams:
     """All you need to specify a BPETokenizer."""
-    vocab: dict[int, bytes]     # index -> bytes
+
+    vocab: dict[int, bytes]  # index -> bytes
     merges: dict[tuple[int, int], int]  # index1,index2 -> new_index
     special_tokens: dict[str, int] | None = None  # special_token_string -> index
 
-def merge(indices: list[int], pair: tuple[int, int], new_index: int) -> list[int]:  # @inspect indices, @inspect pair, @inspect new_index
+
+def merge(
+    indices: list[int], pair: tuple[int, int], new_index: int
+) -> list[int]:  # @inspect indices, @inspect pair, @inspect new_index
     """Return `indices`, but with all instances of `pair` replaced with `new_index`."""
     new_indices = []  # @inspect new_indices
     i = 0  # @inspect i
@@ -34,14 +82,15 @@ def merge(indices: list[int], pair: tuple[int, int], new_index: int) -> list[int
             i += 1
     return new_indices
 
+
 def _split_on_special_tokens(text: str, special_tokens: Set[str]) -> List[str]:
     """Split text on special tokens, preserving the special tokens as separate parts."""
     if not special_tokens:
         return [text]
-    
+
     # Sort special tokens by length (longest first) to handle overlapping tokens
     sorted_specials = sorted(special_tokens, key=len, reverse=True)
-    
+
     parts = [text]
     for special_token in sorted_specials:
         new_parts = []
@@ -57,26 +106,32 @@ def _split_on_special_tokens(text: str, special_tokens: Set[str]) -> List[str]:
             else:
                 new_parts.append(part)
         parts = new_parts
-    
+
     return parts
+
 
 class BPETokenizer(Tokenizer):
     """BPE tokenizer given a set of merges and a vocabulary."""
+
     def __init__(self, params: BPETokenizerParams):
         self.params = params
         # Initialize special_tokens if not provided
         if self.params.special_tokens is None:
-            object.__setattr__(self.params, 'special_tokens', {})
+            object.__setattr__(self.params, "special_tokens", {})
 
     def encode(self, string: str) -> list[int]:
         # Handle special tokens first
-        special_tokens = set(self.params.special_tokens.keys()) if self.params.special_tokens else set()
-        
+        special_tokens = (
+            set(self.params.special_tokens.keys())
+            if self.params.special_tokens
+            else set()
+        )
+
         if special_tokens:
             # Split text on special tokens
             text_parts = _split_on_special_tokens(string, special_tokens)
             all_tokens = []
-            
+
             for part in text_parts:
                 if part in self.params.special_tokens:
                     # This is a special token, add its ID directly
@@ -84,7 +139,7 @@ class BPETokenizer(Tokenizer):
                 else:
                     # This is regular text, encode it normally
                     all_tokens.extend(self._encode_text(part))
-            
+
             return all_tokens
         else:
             # No special tokens, encode normally
@@ -94,7 +149,7 @@ class BPETokenizer(Tokenizer):
         """Encode regular text (without special token handling)."""
         # First, apply GPT-2 pre-tokenization using regex
         segments = regex.findall(GPT2_TOKENIZER_REGEX, string)
-        
+
         all_indices = []
         for segment in segments:
             # Convert segment to bytes and find corresponding vocabulary indices
@@ -109,13 +164,13 @@ class BPETokenizer(Tokenizer):
                 else:
                     # If byte not found in vocabulary, use the byte value directly
                     indices.append(byte)
-            
+
             # Apply BPE merges to this segment
             for pair, new_index in self.params.merges.items():
                 indices = merge(indices, pair, new_index)
-            
+
             all_indices.extend(indices)
-        
+
         return all_indices
 
     def decode(self, indices: list[int]) -> str:

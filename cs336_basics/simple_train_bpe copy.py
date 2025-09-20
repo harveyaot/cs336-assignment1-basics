@@ -60,8 +60,14 @@ def train_bpe(
         pre_token_bytes = pre_token.encode("utf-8")
         byte_indices = []
         for byte in pre_token_bytes:
-            # Since vocab[i] = bytes([i]) for i in range(256), byte value IS the vocabulary index
-            byte_indices.append(byte)
+            # Find the vocabulary index that corresponds to this byte
+            for idx, vocab_bytes in vocab.items():
+                if vocab_bytes == bytes([byte]):
+                    byte_indices.append(idx)
+                    break
+            else:
+                # If byte not found in vocabulary, use the byte value directly
+                byte_indices.append(byte)
         pre_token_byte_sequences.append(byte_indices)
 
     # Train BPE merges
@@ -80,16 +86,47 @@ def train_bpe(
         max_count = max(pair_counts.values())
         max_pairs = [pair for pair, count in pair_counts.items() if count == max_count]
 
-        # For tie-breaking, sort by byte representation and choose lexicographically greater
+        # For tie-breaking, convert bytes to GPT-2 unicode for comparison
+        from tests.common import gpt2_bytes_to_unicode
+
+        gpt2_encoder = gpt2_bytes_to_unicode()
+
         def pair_to_bytes(pair):
             # Convert each token in the pair to its byte representation
             token1_bytes = vocab[pair[0]]
             token2_bytes = vocab[pair[1]]
+
             # Return the byte sequences for comparison
             return (token1_bytes, token2_bytes)
 
+        # Print detailed information when there are multiple pairs with the same max count
+        if len(max_pairs) > 1:
+            print(f"\n--- Iteration {i} ---")
+            print(f"Max count: {max_count}")
+            print(f"Pairs with max count ({len(max_pairs)} pairs):")
+
+            # Sort by lexicographic order for clarity
+            max_pairs_sorted = sorted(max_pairs, key=lambda x: x[0])
+
+            for pair_item in max_pairs_sorted:
+                # Convert to printable format using GPT-2 unicode
+                token1_bytes = vocab[pair_item[0]]
+                token2_bytes = vocab[pair_item[1]]
+                p1 = "".join([gpt2_encoder[b] for b in token1_bytes])
+                p2 = "".join([gpt2_encoder[b] for b in token2_bytes])
+                print(f"  {pair_item}: '{p1}' '{p2}' (count: {max_count})")
+
+        # Sort by byte representation and choose the lexicographically greater
         max_pairs.sort(key=pair_to_bytes)
         pair = max_pairs[-1]  # Lexicographically greater pair for tie-breaking
+
+        # Print the selected pair when there were ties
+        if len(max_pairs) > 1:
+            token1_bytes = vocab[pair[0]]
+            token2_bytes = vocab[pair[1]]
+            p1 = "".join([gpt2_encoder[b] for b in token1_bytes])
+            p2 = "".join([gpt2_encoder[b] for b in token2_bytes])
+            print(f"Selected pair: {pair} ('{p1}' '{p2}')")
         index1, index2 = pair
 
         # Create new merged token
