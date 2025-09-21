@@ -22,11 +22,67 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from cs336_basics.simple_train_bpe import train_bpe
-from cs336_basics.simple_bpe import BPETokenizerParams
-from cs336_basics.bpe_tokenizer import BPETokenizer
+from cs336_basics.simple_bpe import BPETokenizerParams, BPETokenizer
+from tests.common import gpt2_bytes_to_unicode
 from cs336_basics.simple_data import get_batch
 from cs336_basics.simple_model import TransformerLM
+
+
+def create_gpt2_tokenizer(vocab_path: str, merges_path: str) -> BPETokenizer:
+    """Create a BPE tokenizer using GPT-2 vocabulary and merges."""
+    import json
+
+    print(f"Loading GPT-2 vocabulary from {vocab_path}")
+
+    # Get the GPT-2 byte decoder (inverse of gpt2_bytes_to_unicode)
+    gpt2_byte_decoder = {v: k for k, v in gpt2_bytes_to_unicode().items()}
+
+    with open(vocab_path, "r", encoding="utf-8") as f:
+        vocab_dict = json.load(f)
+
+    # Convert the vocab format: gpt2_token_string -> token_id to token_id -> bytes
+    vocab = {}
+    for gpt2_token_str, token_id in vocab_dict.items():
+        # Decode the GPT-2 printable representation back to actual bytes
+        token_bytes = bytes([gpt2_byte_decoder[char] for char in gpt2_token_str])
+        vocab[token_id] = token_bytes
+
+    print(f"Loaded vocabulary with {len(vocab)} tokens")
+
+    print(f"Loading GPT-2 merges from {merges_path}")
+    merges = []
+    with open(merges_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    # Skip the version line
+    merge_lines = lines[1:]
+
+    for line in merge_lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Parse "token1 token2" format
+        parts = line.split(" ", 1)
+        if len(parts) != 2:
+            continue
+
+        token1_str, token2_str = parts
+
+        # Decode the GPT-2 printable representations back to actual bytes
+        token1_bytes = bytes([gpt2_byte_decoder[char] for char in token1_str])
+        token2_bytes = bytes([gpt2_byte_decoder[char] for char in token2_str])
+        merges.append((token1_bytes, token2_bytes))
+
+    print(f"Loaded {len(merges)} merge rules")
+
+    # Create the BPE tokenizer
+    special_tokens = ["<|endoftext|>"]
+    params = BPETokenizerParams(vocab, merges, special_tokens)
+    tokenizer = BPETokenizer(params)
+    return tokenizer
+
+
 from cs336_basics.simple_train import (
     AdamW,
     cross_entropy,
@@ -53,77 +109,65 @@ def setup_device():
 
 
 def load_and_tokenize_data(
-    data_path: str, tokenizer: BPETokenizer, max_tokens: Optional[int] = None
+    data_path: str, tokenizer: BPETokenizer = None, max_tokens: Optional[int] = None
 ):
     """
-    Load and tokenize data from a text file.
+    Load pre-tokenized data from a numpy file using memory mapping.
+
+    This function loads data that has been pre-tokenized and saved as uint16
+    numpy arrays. It uses memory mapping to avoid loading the entire dataset
+    into memory at once, which is essential for large datasets.
 
     Args:
-        data_path: Path to the text file
-        tokenizer: BPE tokenizer instance
+        data_path: Path to the pre-tokenized .npy file
+        tokenizer: BPE tokenizer instance (not used, kept for compatibility)
         max_tokens: Maximum number of tokens to load (for memory constraints)
 
     Returns:
-        numpy array of token IDs
+        memory-mapped numpy array of token IDs
     """
-    print(f"Loading data from {data_path}...")
+    print(f"Loading pre-tokenized data from {data_path}...")
 
-    with open(data_path, "r", encoding="utf-8") as f:
-        text = f.read()
+    # Check if the file exists
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"Pre-tokenized data file not found: {data_path}")
 
-    print(f"Text length: {len(text):,} characters")
+    # Load the data using memory mapping
+    # mmap_mode='r' ensures the array is memory-mapped and read-only
+    tokens = np.load(data_path, mmap_mode="r")
 
-    # Tokenize the text
-    tokens = tokenizer.encode(text)
-    print(f"Tokenized into {len(tokens):,} tokens")
+    print(f"Loaded {len(tokens):,} tokens from memory-mapped file")
+    print(f"Data type: {tokens.dtype}")
+    print(f"File size: {os.path.getsize(data_path):,} bytes")
 
-    # Limit tokens if specified
-    if max_tokens and len(tokens) > max_tokens:
-        tokens = tokens[:max_tokens]
-        print(f"Limited to {len(tokens):,} tokens")
-
-    return np.array(tokens, dtype=np.int64)
+    # Convert to int64 for consistency with training code, but keep memory-mapped
+    # Note: This creates a view, not a copy, so it's still memory-efficient
+    return tokens.astype(np.int64)
 
 
-def train_tokenizer(
-    text_path: str, num_merges: int, special_tokens: list[str] = None
-) -> BPETokenizer:
+def load_dataset_splits(
+    train_data_path: str, val_data_path: str, max_tokens: Optional[int] = None
+):
     """
-    Train a BPE tokenizer on the given text.
+    Load both training and validation datasets using memory mapping.
 
     Args:
-        text_path: Path to the training text file
-        num_merges: Number of BPE merges to perform
-        special_tokens: List of special tokens to add
+        train_data_path: Path to the pre-tokenized training data .npy file
+        val_data_path: Path to the pre-tokenized validation data .npy file
+        max_tokens: Maximum number of tokens to load per split (for memory constraints)
 
     Returns:
-        Trained BPE tokenizer
+        tuple of (train_tokens, val_tokens) as memory-mapped arrays
     """
-    print(f"Training BPE tokenizer with {num_merges} merges...")
+    print("Loading dataset splits...")
 
-    with open(text_path, "r", encoding="utf-8") as f:
-        text = f.read()
+    train_tokens = load_and_tokenize_data(train_data_path, max_tokens=max_tokens)
+    val_tokens = load_and_tokenize_data(val_data_path, max_tokens=max_tokens)
 
-    # Train BPE
-    bpe_params = train_bpe(text, num_merges, special_tokens)
+    print(f"Training set: {len(train_tokens):,} tokens")
+    print(f"Validation set: {len(val_tokens):,} tokens")
 
-    # Convert BPETokenizerParams to the format expected by BPETokenizer constructor
-    vocab = bpe_params.vocab
-    merges = []
-    for (id1, id2), _ in bpe_params.merges.items():
-        bytes1 = vocab.get(id1, b"")
-        bytes2 = vocab.get(id2, b"")
-        merges.append((bytes1, bytes2))
-
-    special_tokens = (
-        list(bpe_params.special_tokens.keys()) if bpe_params.special_tokens else None
-    )
-
-    # Create tokenizer
-    tokenizer = BPETokenizer(vocab, merges, special_tokens)
-
-    print(f"Vocabulary size: {len(tokenizer.vocab)}")
-    return tokenizer
+    return train_tokens, val_tokens
 
 
 def create_model(
@@ -352,13 +396,13 @@ def main():
     parser.add_argument(
         "--train_data",
         type=str,
-        default="data/TinyStoriesV2-GPT4-train.txt",
+        default="tokenized_data/TinyStoriesV2-GPT4-train_tokenized.npy",
         help="Path to training data file",
     )
     parser.add_argument(
         "--val_data",
         type=str,
-        default="data/TinyStoriesV2-GPT4-valid.txt",
+        default="tokenized_data/TinyStoriesV2-GPT4-valid_tokenized.npy",
         help="Path to validation data file",
     )
     parser.add_argument(
@@ -450,26 +494,28 @@ def main():
     # Setup device
     device = setup_device()
 
-    # Train or load tokenizer
-    tokenizer_path = f"{args.output_dir}/tokenizer.pt"
-    if os.path.exists(tokenizer_path):
-        print(f"Loading existing tokenizer from {tokenizer_path}")
-        tokenizer = torch.load(tokenizer_path)
-    else:
-        print("Training new tokenizer...")
-        tokenizer = train_tokenizer(
-            args.train_data, args.num_merges, args.special_tokens
-        )
-        torch.save(tokenizer, tokenizer_path)
-        print(f"Tokenizer saved to {tokenizer_path}")
+    # Create GPT-2 tokenizer
+    print("Creating GPT-2 tokenizer...")
+    tokenizer = create_gpt2_tokenizer(
+        "tests/fixtures/gpt2_vocab.json", "tests/fixtures/gpt2_merges.txt"
+    )
 
-    # Load data
-    train_tokens = load_and_tokenize_data(args.train_data, tokenizer, args.max_tokens)
-    val_tokens = load_and_tokenize_data(args.val_data, tokenizer, args.max_tokens)
+    # Load pre-tokenized data
+    print("Loading pre-tokenized data...")
+    train_tokens = load_and_tokenize_data(
+        "tokenized_data/TinyStoriesV2-GPT4-train_tokenized.npy",
+        tokenizer,
+        args.max_tokens,
+    )
+    val_tokens = load_and_tokenize_data(
+        "tokenized_data/TinyStoriesV2-GPT4-valid_tokenized.npy",
+        tokenizer,
+        args.max_tokens,
+    )
 
     # Create model
     model = create_model(
-        vocab_size=len(tokenizer.vocab),
+        vocab_size=len(tokenizer.params.vocab),
         context_length=args.context_length,
         d_model=args.d_model,
         num_layers=args.num_layers,
